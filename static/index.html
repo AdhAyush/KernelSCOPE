@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KernelScope — Linux Kernel Internals Observatory</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0f1117;
+    --surface:  #1a1d27;
+    --surface2: #22263a;
+    --border:   #2e3250;
+    --text:     #e2e8f0;
+    --muted:    #8892a4;
+    --accent:   #6c8efb;
+    --green:    #4ade80;
+    --amber:    #fbbf24;
+    --coral:    #f87171;
+    --purple:   #c084fc;
+    --teal:     #2dd4bf;
+    --mono:     'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size: 14px; line-height: 1.5; }
+
+  /* ── Top bar ── */
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
+  .logo { font-size: 18px; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; }
+  .logo span { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .pid-row { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .pid-row label { color: var(--muted); font-size: 12px; }
+  #pid-select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 6px; font-size: 13px; min-width: 180px; }
+  #pid-input  { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 80px; }
+  .btn { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; }
+  .btn:hover { opacity: 0.85; }
+  .btn-sm { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .status-dot.off { background: var(--muted); }
+  #status-text { font-size: 12px; color: var(--muted); }
+
+  /* ── Layout ── */
+  .main { padding: 16px 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-height: 300px; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel-title { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .panel-sub { font-size: 11px; color: var(--muted); margin-bottom: 10px; line-height: 1.4; }
+
+  /* ── Metrics row ── */
+  .metrics { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .metric { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; min-width: 100px; }
+  .metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric-value { font-size: 18px; font-weight: 600; color: var(--text); margin-top: 2px; }
+  .metric-value.green { color: var(--green); }
+  .metric-value.amber { color: var(--amber); }
+  .metric-value.coral { color: var(--coral); }
+  .metric-value.purple { color: var(--purple); }
+  .metric-value.teal  { color: var(--teal); }
+
+  /* ── Memory map ── */
+  .memmap { display: flex; flex-direction: column; gap: 3px; max-height: 320px; overflow-y: auto; margin-bottom: 8px; }
+  .memrow { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 4px; background: var(--surface2); font-size: 11px; font-family: var(--mono); }
+  .memrow-color { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .memrow-addr { color: var(--accent); min-width: 140px; }
+  .memrow-size { color: var(--amber); min-width: 60px; text-align: right; }
+  .memrow-perms { color: var(--muted); min-width: 36px; }
+  .memrow-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; margin-bottom: 6px; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  /* ── Thread table ── */
+  table.info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.info-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  table.info-table td:first-child { color: var(--muted); white-space: nowrap; width: 40%; }
+  table.info-table td:last-child { color: var(--text); font-family: var(--mono); word-break: break-all; }
+  .thread-list { margin-top: 8px; }
+  .thread-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; margin-bottom: 4px; font-size: 11px; font-family: var(--mono); display: flex; gap: 12px; }
+
+  /* ── FD list ── */
+  .fd-list { max-height: 160px; overflow-y: auto; margin-top: 8px; }
+  .fd-item { display: flex; gap: 8px; font-size: 11px; font-family: var(--mono); padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .fd-num  { color: var(--accent); min-width: 28px; }
+  .fd-type { min-width: 48px; }
+  .fd-type.socket { color: var(--teal); }
+  .fd-type.pipe   { color: var(--amber); }
+  .fd-type.file   { color: var(--green); }
+  .fd-type.device { color: var(--coral); }
+  .fd-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Note box ── */
+  .note-box { background: rgba(108,142,251,0.08); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 0 5px 5px 0; font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+  .note-box .hl { color: var(--accent); }
+
+  /* ── Demo buttons ── */
+  .demo-grid { display: flex; flex-direction: column; gap: 10px; }
+  .demo-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px; }
+  .demo-card h4 { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .demo-card p  { font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.4; }
+  .demo-output  { background: #0a0c14; border: 1px solid var(--border); border-radius: 5px; padding: 8px; font-family: var(--mono); font-size: 11px; color: var(--green); white-space: pre-wrap; max-height: 140px; overflow-y: auto; margin-top: 6px; display: none; }
+  .demo-output.show { display: block; }
+
+  /* ── Boot ── */
+  .boot-stages { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .stage-row { display: flex; align-items: flex-start; gap: 10px; }
+  .stage-dot-col { display: flex; flex-direction: column; align-items: center; min-width: 12px; }
+  .stage-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+  .stage-line { width: 1px; background: var(--border); flex: 1; margin-top: 3px; min-height: 16px; }
+  .stage-content { padding-bottom: 8px; }
+  .stage-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .stage-desc { font-size: 11px; color: var(--muted); }
+  .stage-src  { font-size: 10px; color: var(--accent); font-family: var(--mono); }
+  .dmesg-box { background: #0a0c14; border: 1px solid var(--border); border-radius: 5px; padding: 8px; font-family: var(--mono); font-size: 10px; color: var(--muted); max-height: 200px; overflow-y: auto; margin-top: 8px; white-space: pre; }
+  .dmesg-line.kern { color: var(--green); }
+
+  /* ── Chart wrappers ── */
+  .chart-wrap { position: relative; height: 200px; margin-top: 8px; }
+  .chart-wrap-sm { position: relative; height: 160px; margin-top: 8px; }
+
+  /* ── Scrollbar styling ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Loader ── */
+  .loader { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
+
+  /* ── Tags ── */
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 500; margin-left: 4px; }
+  .tag-blue   { background: rgba(56,138,221,0.15); color: #85b7eb; }
+  .tag-green  { background: rgba(74,222,128,0.12); color: var(--green); }
+  .tag-amber  { background: rgba(251,191,36,0.12); color: var(--amber); }
+  .tag-purple { background: rgba(192,132,252,0.12); color: var(--purple); }
+  .tag-teal   { background: rgba(45,212,191,0.12); color: var(--teal); }
+</style>
+</head>
+<body>
+
+<!-- ── Top bar ─────────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="logo">KernelScope <span>Linux Kernel Internals Observatory</span></div>
+  <div class="pid-row">
+    <label>PID:</label>
+    <input type="number" id="pid-input" placeholder="e.g. 1234" min="1">
+    <select id="pid-select"><option value="">— quick pick —</option></select>
+    <button class="btn" onclick="attach()">Attach</button>
+    <div class="status-dot off" id="status-dot"></div>
+    <span id="status-text">not attached</span>
+  </div>
+</div>
+
+<!-- ── Main grid ────────────────────────────────────────────────────── -->
+<div class="main">
+  <div class="grid">
+
+    <!-- Panel 1: Virtual Address Space Map -->
+    <div class="panel wide" id="panel-maps">
+      <div class="panel-title">
+        Virtual Address Space Map
+        <span class="tag tag-blue">vm_area_struct</span>
+        <span class="tag tag-blue">ASLR</span>
+        <span class="tag tag-purple">mmap</span>
+      </div>
+      <div class="panel-sub" id="maps-note">
+        Each row is one VMA (vm_area_struct) from the process mm_struct. Attach a PID to see its address space.
+      </div>
+      <div class="legend" id="maps-legend"></div>
+      <div class="memmap" id="maps-list"><div class="loader">Attach a PID to begin</div></div>
+    </div>
+
+    <!-- Panel 2: task_struct Inspector -->
+    <div class="panel" id="panel-proc">
+      <div class="panel-title">
+        task_struct Inspector
+        <span class="tag tag-green">process management</span>
+        <span class="tag tag-amber">threads</span>
+      </div>
+      <div class="panel-sub">kernel fields: pid, tgid, ppid, state, mm_struct, nvcsw, files_struct</div>
+      <div id="proc-content"><div class="loader">Attach a PID</div></div>
+    </div>
+
+    <!-- Panel 3: Syscall Tracer -->
+    <div class="panel" id="panel-syscall">
+      <div class="panel-title">
+        Syscall Tracer <span class="tag tag-amber">ring 3→0</span>
+        <button class="btn-sm" style="margin-left:auto" onclick="traceSyscalls()">Trace 3s</button>
+      </div>
+      <div class="panel-sub">strace attaches for 3 seconds and counts syscalls by ring-crossing category</div>
+      <div id="syscall-note" class="note-box" style="margin-bottom:8px">
+        Click "Trace 3s" to attach strace. Each bar = one ring 3→0 SYSCALL instruction type.
+      </div>
+      <div class="chart-wrap" id="syscall-chart-wrap"><canvas id="syscall-chart"></canvas></div>
+    </div>
+
+    <!-- Panel 4: VFS Layer -->
+    <div class="panel" id="panel-vfs">
+      <div class="panel-title">
+        VFS Layer Monitor
+        <span class="tag tag-teal">inode cache</span>
+        <span class="tag tag-teal">dentry</span>
+        <span class="tag tag-green">block I/O</span>
+      </div>
+      <div class="panel-sub">inode_hashtable + dentry_hashtable + /proc/diskstats + page cache</div>
+      <div id="vfs-content"><div class="loader">Loading...</div></div>
+    </div>
+
+    <!-- Panel 5: Network Stack -->
+    <div class="panel" id="panel-net">
+      <div class="panel-title">
+        Network Stack Monitor
+        <span class="tag tag-teal">sk_buff</span>
+        <span class="tag tag-blue">socket/sock</span>
+        <span class="tag tag-blue">TCP/UDP</span>
+      </div>
+      <div class="panel-sub">socket API → protocol layer → network layer → driver layer (net/socket.c)</div>
+      <div class="metrics" id="net-metrics"></div>
+      <div class="chart-wrap-sm"><canvas id="tcp-states-chart"></canvas></div>
+    </div>
+
+    <!-- Panel 6: IPC & Demo Runner -->
+    <div class="panel" id="panel-demos">
+      <div class="panel-title">
+        IPC &amp; mmap Demos
+        <span class="tag tag-purple">mmap</span>
+        <span class="tag tag-purple">shm IPC</span>
+        <span class="tag tag-amber">zero-copy</span>
+      </div>
+      <div class="panel-sub">Run live C programs — observe results in Panel 1 and the Syscall panel simultaneously</div>
+      <div class="demo-grid">
+
+        <div class="demo-card">
+          <h4 style="color:var(--purple)">mmap() Demo</h4>
+          <p>Maps a file into memory. Watch Panel 1 for a new VMA to appear in real-time. The VMA vanishes after 20 seconds when munmap() is called.</p>
+          <button class="btn-sm" onclick="runDemo('mmap')">Run mmap demo</button>
+          <div class="demo-output" id="out-mmap"></div>
+        </div>
+
+        <div class="demo-card">
+          <h4 style="color:var(--teal)">Shared Memory IPC</h4>
+          <p>Parent + child share physical pages via POSIX shm. Two different virtual addresses → same physical frames. Check /dev/shm/ after running.</p>
+          <button class="btn-sm" onclick="runDemo('ipc')">Run IPC demo</button>
+          <div class="demo-output" id="out-ipc"></div>
+        </div>
+
+        <div class="demo-card">
+          <h4 style="color:var(--amber)">Zero-Copy sendfile()</h4>
+          <p>Benchmarks sendfile() vs read()+write() for 50MB. sendfile stays in ring 0 — the Syscall panel will show NO read()/write() calls for the sendfile path.</p>
+          <button class="btn-sm" onclick="runDemo('zerocopy')">Run benchmark</button>
+          <div class="demo-output" id="out-zerocopy"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Panel 7: Boot Timeline -->
+    <div class="panel wide" id="panel-boot">
+      <div class="panel-title">
+        Boot Process Timeline
+        <span class="tag tag-green">UEFI→GRUB→kernel→systemd</span>
+        <button class="btn-sm" style="margin-left:auto" onclick="loadBoot()">Load</button>
+      </div>
+      <div class="panel-sub">dmesg ring buffer + systemd-analyze blame — the full boot story</div>
+      <div id="boot-content">
+        <div class="boot-stages" id="boot-stages"></div>
+        <div id="boot-extra"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────
+let currentPid = null;
+let refreshInterval = null;
+let tcpChart = null;
+let syscallChart = null;
+
+const REGION_COLORS = {
+  text:     '#378ADD',
+  data:     '#639922',
+  heap:     '#BA7517',
+  stack:    '#D85A30',
+  vdso:     '#7F77DD',
+  vsyscall: '#534AB7',
+  mmap:     '#1D9E75',
+  other:    '#888780',
+};
+
+// ── Init ─────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  loadProcessList();
+  refreshVFS();
+  refreshNetwork();
+  loadBootStages();
+  setInterval(refreshVFS, 3000);
+  setInterval(refreshNetwork, 3000);
+  setInterval(loadProcessList, 10000);
+});
+
+// ── Process list ──────────────────────────────────────────────────────────
+async function loadProcessList() {
+  try {
+    const data = await api('/api/processes');
+    const sel = document.getElementById('pid-select');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— quick pick —</option>';
+    data.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.pid;
+      opt.textContent = `${p.pid}  ${p.name}`;
+      sel.appendChild(opt);
+    });
+    if (cur) sel.value = cur;
+  } catch(e) {}
+}
+
+document.getElementById('pid-select').addEventListener('change', function() {
+  if (this.value) {
+    document.getElementById('pid-input').value = this.value;
+  }
+});
+
+// ── Attach ────────────────────────────────────────────────────────────────
+function attach() {
+  const pid = parseInt(document.getElementById('pid-input').value);
+  if (!pid || pid < 1) { alert('Enter a valid PID'); return; }
+  currentPid = pid;
+
+  document.getElementById('status-dot').classList.remove('off');
+  document.getElementById('status-text').textContent = `PID ${pid} attached — refreshing every 2s`;
+
+  // Immediate load
+  refreshMaps();
+  refreshProcess();
+
+  // Auto-refresh
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(() => {
+    refreshMaps();
+    refreshProcess();
+  }, 2000);
+}
+
+// ── Panel 1: Memory Map ───────────────────────────────────────────────────
+async function refreshMaps() {
+  if (!currentPid) return;
+  try {
+    const d = await api(`/api/process/${currentPid}/maps`);
+    if (d.error) { setLoader('maps-list', d.error); return; }
+
+    // Note
+    document.getElementById('maps-note').textContent = d.aslr_note;
+
+    // Legend
+    const legend = document.getElementById('maps-legend');
+    legend.innerHTML = Object.entries(REGION_COLORS).map(([k, c]) =>
+      `<div class="legend-item"><div class="legend-dot" style="background:${c}"></div><span style="color:#8892a4;font-size:10px">${k}</span></div>`
+    ).join('');
+
+    // Rows
+    const list = document.getElementById('maps-list');
+    list.innerHTML = '';
+    d.regions.forEach(r => {
+      const row = document.createElement('div');
+      row.className = 'memrow';
+      row.innerHTML = `
+        <div class="memrow-color" style="background:${r.color}"></div>
+        <div class="memrow-addr">${r.start}-${r.end}</div>
+        <div class="memrow-perms">${r.perms}</div>
+        <div class="memrow-size">${r.size_kb >= 1024 ? (r.size_kb/1024).toFixed(1)+'M' : r.size_kb+'K'}</div>
+        <div class="memrow-name">${r.pathname}</div>
+      `;
+      list.appendChild(row);
+    });
+  } catch(e) { setLoader('maps-list', 'Error: '+e.message); }
+}
+
+// ── Panel 2: task_struct ──────────────────────────────────────────────────
+async function refreshProcess() {
+  if (!currentPid) return;
+  try {
+    const d = await api(`/api/process/${currentPid}/info`);
+    if (d.error) { document.getElementById('proc-content').innerHTML = err(d.error); return; }
+
+    const stateColor = d.state.includes('R') ? 'green' : d.state.includes('Z') ? 'coral' : d.state.includes('D') ? 'amber' : 'teal';
+
+    let html = `
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">PID</div><div class="metric-value" style="font-size:14px;font-family:var(--mono)">${d.pid}</div></div>
+        <div class="metric"><div class="metric-label">TGID</div><div class="metric-value" style="font-size:14px;font-family:var(--mono)">${d.tgid}</div></div>
+        <div class="metric"><div class="metric-label">State</div><div class="metric-value ${stateColor}" style="font-size:14px">${d.state}</div></div>
+        <div class="metric"><div class="metric-label">Threads</div><div class="metric-value purple">${d.num_threads}</div></div>
+        <div class="metric"><div class="metric-label">VmRSS</div><div class="metric-value teal" style="font-size:14px">${fmt_kb(d.vm_rss_kb)}</div></div>
+        <div class="metric"><div class="metric-label">VmSize</div><div class="metric-value" style="font-size:14px">${fmt_kb(d.vm_size_kb)}</div></div>
+      </div>
+      <table class="info-table">
+        <tr><td>Name</td><td>${d.name}</td></tr>
+        <tr><td>Cmdline</td><td>${d.cmdline || '—'}</td></tr>
+        <tr><td>PPID</td><td>${d.ppid}</td></tr>
+        <tr><td>UID</td><td>${d.uid}</td></tr>
+        <tr><td>CPU</td><td>${d.cpu_num || '?'}</td></tr>
+        <tr><td>VmPeak</td><td>${fmt_kb(d.vm_peak_kb)}</td></tr>
+        <tr><td>VmStk</td><td>${fmt_kb(d.vm_stack_kb)}</td></tr>
+        <tr><td>Voluntary ctxsw</td><td>${d.voluntary_ctxt_switches}</td></tr>
+        <tr><td>Involuntary ctxsw</td><td>${d.nonvoluntary_ctxt_switches}</td></tr>
+      </table>
+    `;
+
+    // Threads
+    if (d.thread_list && d.thread_list.length > 1) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:4px">Threads (all share TGID ${d.tgid}):</div>`;
+      html += '<div class="thread-list">';
+      d.thread_list.forEach(t => {
+        html += `<div class="thread-item">
+          <span style="color:var(--accent)">TID ${t.tid}</span>
+          <span style="color:var(--muted)">${t.state}</span>
+          <span style="color:var(--green)">v:${t.voluntary_ctxt_switches}</span>
+          <span style="color:var(--amber)">iv:${t.nonvoluntary_ctxt_switches}</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+
+    // Open FDs
+    if (d.open_fds && d.open_fds.length) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:4px">Open file descriptors (${d.open_fds.length}):</div>`;
+      html += '<div class="fd-list">';
+      d.open_fds.slice(0, 20).forEach(f => {
+        html += `<div class="fd-item">
+          <span class="fd-num">${f.fd}</span>
+          <span class="fd-type ${f.type}">${f.type}</span>
+          <span class="fd-name">${f.target}</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+
+    // Notes
+    if (d.notes) {
+      html += `<div class="note-box">
+        <span class="hl">TGID≠PID:</span> ${d.notes.tgid_vs_pid}<br>
+        <span class="hl">Rings:</span> ${d.notes.cpu_rings}
+      </div>`;
+    }
+
+    document.getElementById('proc-content').innerHTML = html;
+  } catch(e) { document.getElementById('proc-content').innerHTML = err(e.message); }
+}
+
+// ── Panel 3: Syscall Tracer ───────────────────────────────────────────────
+async function traceSyscalls() {
+  if (!currentPid) { alert('Attach a PID first'); return; }
+  document.getElementById('syscall-note').textContent = `Tracing PID ${currentPid} for 3 seconds via strace...`;
+  try {
+    const d = await api(`/api/process/${currentPid}/syscalls`);
+    if (d.error) {
+      document.getElementById('syscall-note').innerHTML = `<span style="color:var(--coral)">${d.error}</span>`;
+      return;
+    }
+    document.getElementById('syscall-note').textContent = d.note || '';
+
+    const syscalls = d.syscalls || [];
+    if (!syscalls.length) {
+      document.getElementById('syscall-note').textContent = 'No syscalls captured. Process may be idle.';
+      return;
+    }
+
+    const labels = syscalls.map(s => s.name);
+    const counts = syscalls.map(s => s.count);
+    const colors = syscalls.map(s => s.color);
+
+    const ctx = document.getElementById('syscall-chart').getContext('2d');
+    if (syscallChart) syscallChart.destroy();
+    syscallChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderRadius: 3 }] },
+      options: {
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#8892a4', font:{size:10} }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#e2e8f0', font:{size:11,family:'JetBrains Mono,monospace'} }, grid: { display:false } },
+        },
+        responsive: true, maintainAspectRatio: false,
+      }
+    });
+  } catch(e) {
+    document.getElementById('syscall-note').innerHTML = `<span style="color:var(--coral)">Error: ${e.message}</span>`;
+  }
+}
+
+// ── Panel 4: VFS ─────────────────────────────────────────────────────────
+async function refreshVFS() {
+  try {
+    const d = await api('/api/vfs');
+    if (d.error) return;
+
+    const pc = d.page_cache || {};
+    const totalKb = parseInt(pc.total_kb) || 1;
+    const cachedKb = parseInt(pc.cached_kb) || 0;
+    const pct = Math.round(cachedKb / totalKb * 100);
+
+    let html = `
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">Inodes in use</div><div class="metric-value teal">${fmtn(d.inodes.in_use)}</div></div>
+        <div class="metric"><div class="metric-label">Inode hit%</div><div class="metric-value green">${d.inodes.hit_ratio}%</div></div>
+        <div class="metric"><div class="metric-label">Dentries</div><div class="metric-value purple">${fmtn(d.dentry.total)}</div></div>
+        <div class="metric"><div class="metric-label">Negative dentry</div><div class="metric-value amber">${fmtn(d.dentry.negative)}</div></div>
+        <div class="metric"><div class="metric-label">Page cache</div><div class="metric-value">${fmt_kb(cachedKb)} (${pct}%)</div></div>
+        <div class="metric"><div class="metric-label">Dirty pages</div><div class="metric-value coral">${fmt_kb(parseInt(pc.dirty_kb)||0)}</div></div>
+      </div>
+    `;
+
+    // Disk table
+    if (d.disks && d.disks.length) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Block I/O layer — /proc/diskstats:</div>`;
+      html += `<table class="info-table">
+        <tr style="font-size:10px;color:var(--muted)"><td>Device</td><td>Read</td><td>Written</td><td>I/O wait</td></tr>`;
+      d.disks.slice(0, 6).forEach(disk => {
+        html += `<tr><td>${disk.name}</td><td style="color:var(--teal)">${disk.mb_read} MB</td><td style="color:var(--amber)">${disk.mb_written} MB</td><td style="color:${disk.ms_io_wait>100?'var(--coral)':'var(--muted)'}">${disk.ms_io_wait} ms</td></tr>`;
+      });
+      html += '</table>';
+    }
+
+    html += `<div class="note-box">
+      <span class="hl">inode:</span> ${d.inodes.note}<br>
+      <span class="hl">dentry:</span> ${d.dentry.note}
+    </div>`;
+
+    document.getElementById('vfs-content').innerHTML = html;
+  } catch(e) {}
+}
+
+// ── Panel 5: Network ──────────────────────────────────────────────────────
+async function refreshNetwork() {
+  try {
+    const d = await api('/api/network');
+    if (d.error) return;
+
+    const tcp = d.tcp_stats || {};
+    const udp = d.udp_stats || {};
+    const sk  = (d.sockstat && d.sockstat.TCP) || {};
+
+    document.getElementById('net-metrics').innerHTML = `
+      <div class="metric"><div class="metric-label">TCP established</div><div class="metric-value green">${tcp.curr_established||0}</div></div>
+      <div class="metric"><div class="metric-label">TCP retransmits</div><div class="metric-value ${(tcp.retransmits||0)>0?'coral':'muted'}">${tcp.retransmits||0}</div></div>
+      <div class="metric"><div class="metric-label">TCP orphans</div><div class="metric-value amber">${sk.orphan||0}</div></div>
+      <div class="metric"><div class="metric-label">UDP errors</div><div class="metric-value ${(udp.in_errors||0)>0?'coral':'muted'}">${udp.in_errors||0}</div></div>
+    `;
+
+    // TCP states doughnut
+    const states = d.tcp_states || {};
+    const labels = Object.keys(states).filter(k => states[k] > 0);
+    const values = labels.map(k => states[k]);
+    const stateColors = {
+      'ESTABLISHED':'#4ade80','LISTEN':'#6c8efb','TIME-WAIT':'#fbbf24',
+      'CLOSE-WAIT':'#f87171','SYN-SENT':'#c084fc','FIN-WAIT-1':'#2dd4bf',
+      'FIN-WAIT-2':'#38bdf8','CLOSING':'#fb923c','LAST-ACK':'#a78bfa',
+    };
+    const bgColors = labels.map(l => stateColors[l] || '#888');
+
+    const ctx = document.getElementById('tcp-states-chart').getContext('2d');
+    if (tcpChart) tcpChart.destroy();
+    tcpChart = new Chart(ctx, {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: values, backgroundColor: bgColors, borderWidth: 1, borderColor: '#1a1d27' }] },
+      options: {
+        plugins: {
+          legend: { position: 'right', labels: { color:'#8892a4', font:{size:10}, boxWidth:10 } }
+        },
+        responsive: true, maintainAspectRatio: false,
+      }
+    });
+
+    // Interface table under chart
+    if (d.interfaces && d.interfaces.length) {
+      const panel = document.getElementById('panel-net');
+      let existing = panel.querySelector('.iface-table');
+      if (!existing) {
+        existing = document.createElement('div');
+        existing.className = 'iface-table';
+        panel.appendChild(existing);
+      }
+      let t = `<div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:3px">Interfaces:</div>
+               <table class="info-table">
+               <tr style="font-size:10px;color:var(--muted)"><td>Interface</td><td>RX</td><td>TX</td><td>Errors</td></tr>`;
+      d.interfaces.slice(0,4).forEach(i => {
+        t += `<tr><td>${i.name}</td><td style="color:var(--teal)">${i.rx_mb} MB</td><td style="color:var(--amber)">${i.tx_mb} MB</td><td style="color:${(i.rx_errors+i.tx_errors)>0?'var(--coral)':'var(--muted)'}">${i.rx_errors+i.tx_errors}</td></tr>`;
+      });
+      t += '</table>';
+      t += `<div class="note-box" style="margin-top:6px"><span class="hl">sk_buff:</span> ${d.layer_notes.sk_buff}</div>`;
+      existing.innerHTML = t;
+    }
+  } catch(e) {}
+}
+
+// ── Panel 6: Demos ────────────────────────────────────────────────────────
+async function runDemo(name) {
+  const outEl = document.getElementById(`out-${name}`);
+  outEl.textContent = 'Running…';
+  outEl.classList.add('show');
+  try {
+    const d = await fetch(`/api/demo/${name}`, { method:'POST' }).then(r=>r.json());
+    outEl.textContent = d.output || d.error || 'No output';
+    if (d.demo_pid) {
+      outEl.textContent += `\n\n[Demo is running as PID ${d.demo_pid}]\n[Attach this PID in the top bar to see its VMAs in Panel 1!]`;
+    }
+  } catch(e) {
+    outEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+// ── Panel 7: Boot ─────────────────────────────────────────────────────────
+function loadBootStages() {
+  // Static stages first (always shown)
+  const stages = [
+    { stage: 'UEFI / BIOS', desc: 'Power-on self-test, locate bootloader', src: 'Firmware' },
+    { stage: 'GRUB2', desc: 'Load bzImage + initramfs into RAM', src: 'boot/grub/grub.cfg' },
+    { stage: 'Kernel decompress', desc: 'Decompress, setup_arch(), memory map', src: 'arch/x86/boot/compressed/head_64.S' },
+    { stage: 'start_kernel()', desc: 'Scheduler, IRQs, memory zones, VFS init', src: 'init/main.c' },
+    { stage: 'initramfs', desc: 'Temporary root fs, load storage drivers', src: 'init/initramfs.c' },
+    { stage: 'PID 1 — systemd', desc: 'Mount real root, activate services', src: '/lib/systemd/systemd' },
+  ];
+  const el = document.getElementById('boot-stages');
+  el.innerHTML = stages.map((s, i) => `
+    <div class="stage-row">
+      <div class="stage-dot-col">
+        <div class="stage-dot"></div>
+        ${i < stages.length - 1 ? '<div class="stage-line"></div>' : ''}
+      </div>
+      <div class="stage-content">
+        <div class="stage-name">${s.stage}</div>
+        <div class="stage-desc">${s.desc}</div>
+        <div class="stage-src">${s.src}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadBoot() {
+  document.getElementById('boot-extra').innerHTML = '<div class="loader">Loading dmesg and systemd-analyze...</div>';
+  try {
+    const d = await api('/api/boot');
+    let html = '';
+
+    if (d.boot_time) {
+      html += `<div class="note-box" style="margin-bottom:8px"><span class="hl">Boot time:</span> ${d.boot_time}</div>`;
+    }
+
+    if (d.blame && d.blame.length) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Top services by startup time (systemd-analyze blame):</div>`;
+      html += `<table class="info-table">`;
+      d.blame.slice(0, 15).forEach(b => {
+        const w = Math.min(Math.round(b.time_ms / (d.blame[0].time_ms || 1) * 100), 100);
+        html += `<tr>
+          <td style="min-width:80px;color:var(--amber)">${b.time_str}</td>
+          <td>
+            <div style="background:rgba(108,142,251,0.15);border-radius:3px;height:4px;width:${w}%;margin-bottom:2px"></div>
+            <span style="font-size:10px;color:var(--muted)">${b.service}</span>
+          </td>
+        </tr>`;
+      });
+      html += '</table>';
+    }
+
+    if (d.dmesg && d.dmesg.length) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:10px;margin-bottom:4px">dmesg (first ${Math.min(d.dmesg.length, 60)} lines):</div>`;
+      html += '<div class="dmesg-box">';
+      d.dmesg.slice(0, 60).forEach(line => {
+        const isKern = line.includes('Linux') || line.includes('Kernel') || line.includes('kernel');
+        html += `<div class="${isKern?'dmesg-line kern':''}">${escHtml(line)}</div>`;
+      });
+      html += '</div>';
+    }
+
+    document.getElementById('boot-extra').innerHTML = html;
+  } catch(e) {
+    document.getElementById('boot-extra').innerHTML = err(e.message);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+async function api(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+function setLoader(id, msg) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div class="loader">${msg}</div>`;
+}
+
+function err(msg) {
+  return `<div style="color:var(--coral);font-size:12px;padding:10px">${msg}</div>`;
+}
+
+function fmt_kb(kb) {
+  kb = parseInt(kb) || 0;
+  if (kb >= 1024*1024) return (kb/1024/1024).toFixed(1) + ' GB';
+  if (kb >= 1024)      return (kb/1024).toFixed(1) + ' MB';
+  return kb + ' KB';
+}
+
+function fmtn(n) {
+  return (n || 0).toLocaleString();
+}
+
+function escHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
