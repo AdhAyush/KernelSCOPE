@@ -161,34 +161,6 @@ Click **Load** in Panel 7 to fetch:
 
 ---
 
-## Interview talking points this project gives you
-
-**On ASLR:**
-> "I can show you live. Attach the same binary twice with different PIDs —
-> the base addresses in Panel 1 change every time because the kernel randomises
-> them via mmap_base randomisation in `do_mmap()` during `exec()`."
-
-**On task_struct:**
-> "TGID equals PID for the main thread. All threads share the same TGID.
-> That maps directly to `task_struct.tgid` vs `task_struct.pid`.
-> Panel 2 shows all TIDs under a multi-threaded process sharing the same TGID."
-
-**On sk_buff:**
-> "Every packet in flight is one `struct sk_buff`. The sockstat TCP.mem
-> field in Panel 5 shows total pages held by TCP socket buffers system-wide.
-> Under load that number rises — that is sk_buff memory pressure."
-
-**On zero-copy:**
-> "My benchmark shows sendfile at ~3x faster than read()+write() for 50MB.
-> The syscall tracer confirms it: sendfile path shows zero read() or write() calls.
-> The data went disk → page cache → socket buffer entirely in ring 0."
-
-**On kernel space:**
-> "The vDSO region at the top of every process's address space is kernel code
-> mapped into user space. It lets gettimeofday() run without a full ring 3→ring 0
-> transition. Panel 1 labels it purple — you can see it in every single process."
-
----
 
 ## Project structure
 
